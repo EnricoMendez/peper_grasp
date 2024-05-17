@@ -1,316 +1,123 @@
-# Author: Enrico Mendez
-# Date: 06 Noviembre 2023
-# Description: node for testing
-from typing import Iterable, List, NamedTuple, Optional
-import open3d as o3d
-from ament_index_python import get_package_share_directory
-import os
-from sensor_msgs.msg import PointCloud2, PointField
-import std_msgs.msg
-import struct
 import numpy as np
-import ros2_numpy as r2n
-import copy
-import rospkg
-import time
+import open3d as o3d
+import cv2
+from cv_bridge import CvBridge
 import rclpy
 from rclpy.node import Node
-from rclpy.clock import Clock
+import std_msgs.msg
+from sensor_msgs.msg import PointField
+from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs_py import point_cloud2 as pc2
 
-class Class_name(Node):
+class RGBDPointCloudGenerator(Node):
     def __init__(self):
-        super().__init__('Node_name')
-        self.get_logger().info('Node_name initialized')
-        # self.on_shutdown(self.cleanup)
+        super().__init__('rgbd_point_cloud_generator')
 
-        # Create variables
-        self.scene_pointcloud= PointCloud2()
-        self.segmented_point_cloud = PointCloud2()
-        self.calc_pose = PointCloud2()
-        self.start = True
+        self.color_sub = self.create_subscription(Image, 'mask', self.color_callback, 10)
+        self.depth_sub = self.create_subscription(Image, '/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
+
+        self.pcd_publisher = self.create_publisher(PointCloud2, '/filtered_point_cloud', 10)
         
-        # Define constants
-        self.clock = Clock()
-        pkg_path = self.get_pkg_path(target='pose_estimation')
-        mesh_path = pkg_path+"/scaled_centered.stl"
-        number_of_points = 10000 # Ajust this number as you find it convenient.
-        ideal_pepper = o3d.io.read_triangle_mesh(mesh_path)
-        self.ideal_pepper = ideal_pepper.sample_points_poisson_disk(number_of_points)
-        self.timer_period = 0.5
-        self.timer = self.create_timer(self.timer_period, self.processing_method)
+        self.bridge = CvBridge()
+        self.latest_color_image = None
+        self.latest_depth_image = None
 
+        # Camera Intrinsics
+        hfov_radians = np.deg2rad(84) #1.57 # Horizontal field of view in radians
+        image_width = 1280 # Image width in pixels
+        image_height = 720 # Image height in pixels
+        focal_length_px = image_width / (2 * np.tan(hfov_radians / 2))
+        self.intrinsic = o3d.camera.PinholeCameraIntrinsic(
+            width = image_width, 
+            height = image_height, 
+            fx = focal_length_px,  
+            fy = focal_length_px, 
+            cx = image_width / 2, 
+            cy = image_height / 2
+        )
 
-        # Create publishers
-        self.pub_rgbd = self.create_publisher(PointCloud2,'realsense_points',10)
-        self.msg_rgbd = PointCloud2()
-        self.pub_segmented_img = self.create_publisher(PointCloud2,'realsense_segmented',10)
-        self.msg_segmented_img = PointCloud2()
-        self.pub_pose_estimation = self.create_publisher(PointCloud2,'calculated_pose',10)
-        self.msg_pose_estimation = PointCloud2()
-
-        
-        # Create subscribers
-        self.sub_point_cloud = self.create_subscription(PointCloud2,'/camera/depth/color/points', self.point_cloud_callback, 10)
-
-    def get_pkg_path(self,target='size_estimation'):
-        # Get exc path
-        pkg_path = get_package_share_directory(target)
-
-        # Converting to list
-        parts = pkg_path.split('/')
-
-        # Directing to the src folder
-        replace = 'install'
-        idx = parts.index(replace)
-        parts[idx] = 'src'
-        parts.remove('share')
-
-        # Converting back to string
-        path = '/'.join(parts)
-
-        return path
-
-    def ros2o3d(self, points):
-        # Extraer las coordenadas xyz
-        xyz = points[:, :3]
-
-        # Extraer la información del color (si está presente)
-        if points.shape[1] >= 6:  # Asegúrate de que haya al menos 6 columnas (x, y, z, r, g, b)
-            colors = points[:, 3:6] / 255.0  # Normaliza los valores de color al rango [0, 1]
-        else:
-            colors = None
-
-        # Crear un objeto PointCloud en Open3D
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(xyz)
-        
-        # Asignar la información del color al objeto PointCloud si está presente
-        if colors is not None:
-            pcd.colors = o3d.utility.Vector3dVector(colors)
-
-        return pcd
-
-    def o3d2ros(self, pcd, frame_id='map'):
-        # Crear un nuevo mensaje PointCloud2
-        new_msg = PointCloud2()
-
-        # Establecer el encabezado del mensaje
-        new_msg.header.stamp = self.get_clock().now().to_msg()
-        new_msg.header.frame_id = frame_id
-
-        # Convertir la nube de puntos de Open3D a un mensaje PointCloud2 de ROS2
-        new_msg.height = 1
-        new_msg.width = len(pcd.points)
-        new_msg.fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-                          PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-                          PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)]
-        new_msg.is_bigendian = False
-        new_msg.point_step = 12
-        new_msg.row_step = new_msg.point_step * len(pcd.points)
-        new_msg.is_dense = True
-        new_msg.data = np.array(pcd.points).astype(np.float32).tobytes()
-
-        return new_msg
-
-    def centering(self,point_cloud):
-        pepper_centroid = np.mean(np.asarray(point_cloud.points), axis=0)
-
-        # Translate point cloud to make the centroid the origin
-        translated_points = np.asarray(point_cloud.points) - pepper_centroid
-        point_cloud.points = o3d.utility.Vector3dVector(translated_points)
-        return point_cloud
+    def color_callback(self, msg):
+        self.latest_color_image = self.bridge.imgmsg_to_cv2(msg)
+        self.latest_color_image = cv2.cvtColor(self.latest_color_image, cv2.COLOR_BGR2RGB)
     
-    def scale(self,point_cloud,scale_factor = 1,reference=np.array([0, 0, 0])):
-        scaled_model = point_cloud.scale(scale_factor, reference)
-        return scaled_model
+    def depth_callback(self, msg):
+        self.latest_depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        self.generate_point_cloud()
 
-    def point_cloud_callback(self,msg):
-        # Convertir el mensaje PointCloud2 a una matriz NumPy
-        points = np.frombuffer(msg.data, dtype=np.float32).reshape(-1, msg.point_step // 4)
+    def generate_point_cloud(self):
+        if self.latest_color_image is None or self.latest_depth_image is None: 
+            return
+        mask = (self.latest_color_image.sum(axis=2) > 0).astype(np.uint8) * 255
+        self.masked_depth_image = cv2.bitwise_and(self.latest_depth_image, self.latest_depth_image, mask=mask)
+        # Convert image to open3d format
+        depth_o3d = o3d.geometry.Image(self.masked_depth_image.astype(np.uint16))
+        # Convert color image to Open3D format
+        color_temp = cv2.cvtColor(self.latest_color_image, cv2.COLOR_RGB2BGR)
+        # color_temp = self.latest_color_image
+        color_o3d = o3d.geometry.Image(color_temp)
 
-        # Realizar la transformación de la nube de puntos
-        pcd = self.ros2o3d(points)
+        # Create RGB-D image from color and depth
+        rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            color_o3d,
+            depth_o3d, 
+            depth_scale = 1000.0, 
+            depth_trunc = 0.75,  #Originally 3
+            convert_rgb_to_intensity=False
+        )
 
-        # Visualizar la nube de puntos transformada
+        # Generate point cloud
+        pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
+            rgbd_image,
+            self.intrinsic
+        )
+        # pcd.transform([[1,0,0,0], [0,-1,0,0], [0,0,-1,0], [0,0,0,1]])
+        # Visualize the point cloud
         # o3d.visualization.draw_geometries([pcd])
 
+        # Convert Open3D Point Cloud to ROS PointCloud2
+        points = np.asarray(pcd.points)
+        colors = np.asarray(pcd.colors) * 255 # Denormalize colors
+        #points_colors = np.hstack((points, colors))
+        rgb = colors[:,0] + colors[:,1] * 256 + colors[:,2] * 256 * 256
+        # rgb = colors[:,0] + colors[:,1] + colors[:,2] #* 256 #* 256
+        rgb = np.asarray(rgb, dtype=np.float32)
+        points_rgb = np.hstack((points, rgb.reshape(-1,1)))
 
-        self.scene_pointcloud = self.centering(pcd)
-        segmented_points = self.color_segmentation(self.scene_pointcloud)
-        self.segmented_point_cloud = segmented_points
-        self.start = False
+        print(points_rgb.shape[0])
+
+        header = std_msgs.msg.Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "camera_color_optical_frame"
+
+        fields = [
+            PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name='rgb', offset=12, datatype=PointField.FLOAT32, count=1)
+        ]
+
+        cloud_msg = pc2.create_cloud(header, fields, points_rgb)
+        self.pcd_publisher.publish(cloud_msg)
+        numpy_pc = pc2.read_points_numpy(cloud_msg)
+        centroid = self.calculate_centroid(numpy_pc)
     
-    def transform_point_cloud(self,points):
-        # Extraer las coordenadas xyz
-        xyz = points[:, :3]
+    def centroid2rospoint(self, centroid):
+        point = Point()
+        point.x = centroid[0]
+        point.y = centroid[1]
+        point.z = centroid[2]
+        return point
 
-        # Crear un objeto PointCloud en Open3D
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(xyz)
-
-        return pcd
-    
-    def rospc_to_o3dpc(self, msg):
-        # Convertir el mensaje PointCloud2 a una matriz NumPy
-        points = np.frombuffer(msg.data, dtype=np.float32).reshape(-1, msg.point_step // 4)
-
-        # Extraer las coordenadas xyz
-        xyz = points[:, :3]
-
-        # Crear un objeto PointCloud en Open3D
-        o3d_pc = o3d.geometry.PointCloud()
-        o3d_pc.points = o3d.utility.Vector3dVector(xyz)
-        o3d.visualization.draw_geometries(o3d_pc,window_name='title')
-        return o3d_pc
-        
-    def color_segmentation(self,point_cloud):
-        blue_lower = [0, 0, 0]
-        blue_upper = [40, 200, 255]
-        colors = np.asarray(point_cloud.colors) * 255
-    
-
-
-        is_blue = np.logical_and.reduce(
-            [colors[:, 0] >= blue_lower[0], colors[:, 0] <= blue_upper[0],
-            colors[:, 1] >= blue_lower[1], colors[:, 1] <= blue_upper[1],
-            colors[:, 2] >= blue_lower[2], colors[:, 2] <= blue_upper[2]]
-        )
-        blue_points = point_cloud.select_by_index(np.where(is_blue)[0])
-        return blue_points
-    
-    def preprocess_point_cloud(self,pcd, voxel_size):
-        print(":: Downsample with a voxel size of %.3f." % voxel_size)
-        pcd_down = pcd.voxel_down_sample(voxel_size)
-
-        radius_normal = voxel_size * 2
-        print(":: Estimate normal with  search radius %.3f." % radius_normal)
-        pcd_down.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30)
-        )
-        radius_feature = voxel_size * 5
-        print(":: Compute FPFH feature with search radius %.3f." % radius_feature)
-        pcd_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
-            pcd_down, 
-            o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100)
-        )
-        return pcd_down, pcd_fpfh
-
-    def prepare_dataset(self,voxel_size,source,target):
-        print(":: Load two point clouds and disturb the initial pose.")
-        trans_init = np.asarray([[0.0, 0.0, 1.0, 0.0], 
-                                [1.0, 0.0, 0.0, 0.0], 
-                                [0.0, 1.0, 0.0, 0.0], 
-                                [0.0, 0.0, 0.0, 1.0]])
-        source.transform(trans_init)
-        # self.draw_registration_result(source, target, np.identity(4),title='Initial pose')
-
-        source_down, source_fpfh = self.preprocess_point_cloud(source, voxel_size)
-        target_down, target_fpfh = self.preprocess_point_cloud(target, voxel_size)
-        return source, target, source_down, target_down, source_fpfh, target_fpfh
-
-    def draw_registration_result(self,source, target, transformation,title='Open3D'):
-        source_temp = copy.deepcopy(source)
-        target_temp = copy.deepcopy(target)
-        source_temp.paint_uniform_color([1, 0.706, 0])
-        target_temp.paint_uniform_color([0, 0.651, 0.929])
-        source_temp.transform(transformation)
-        o3d.visualization.draw_geometries([source_temp, target_temp],window_name=title)
-        # Note: Since the functions "transform" and "paint_uniform_color" change the point cloud,
-        # we call copy.deep to make copies and protect the original point clouds.
-        return
-
-    def execute_global_registration(self,source_down, target_down, source_fpfh, target_fpfh, voxel_size):
-        distance_threshold = voxel_size * 1.5
-        print(":: RANSAC registration on downsampled point clouds. ")
-        print("   Since the downsampling voxel sixe is %.3f, " % voxel_size)
-        print("   we use a liberal distance threshold %.3f." % distance_threshold)
-        result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-            source_down, target_down, source_fpfh, target_fpfh, True, 
-            distance_threshold, 
-            o3d.pipelines.registration.TransformationEstimationPointToPoint(False), 3, 
-            [
-                o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(
-                    0.9
-                ),
-                o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(
-                    distance_threshold
-                )
-            ], o3d.pipelines.registration.RANSACConvergenceCriteria(1000000, 0.999)
-        )
-        return result
-    
-    def refine_registration(self,source, target, source_fpfh, target_fpfh, voxel_size,result_ransac):
-        distance_threshold = voxel_size * 0.4
-        print(":: Point-to-plane ICP registration is applied on original point")
-        print("   clouds to refine the alignment. This time we use a strict")
-        print("   distance threshold %.3f." % distance_threshold)
-        result = o3d.pipelines.registration.registration_icp(
-            source, target, distance_threshold, result_ransac.transformation, 
-            o3d.pipelines.registration.TransformationEstimationPointToPlane()
-        )
-        return result
-    
-    def compute_normals(self,pcd, radius):
-        pcd.estimate_normals(
-            o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30)
-        )
-    
-    ### Pose register functions end ###
-
-    def pose_register(self,source,target):
-        voxel_size = 0.005 # means 5cm for the original dataset... gotta check on mine
-        source, target, source_down, target_down, source_fpfh, target_fpfh = self.prepare_dataset(
-            voxel_size,source,target)
-        result_ransac = self.execute_global_registration(source_down, target_down, 
-                                            source_fpfh, target_fpfh, 
-                                            voxel_size)
-        print(result_ransac)
-        self.draw_registration_result(source_down, target_down, result_ransac.transformation,title='Ransac aprox')
-        radius_normal = voxel_size * 2
-        self.compute_normals(source, radius_normal)
-        self.compute_normals(target, radius_normal)
-        result_icp = self.refine_registration(source, target, source_fpfh, target_fpfh, voxel_size,result_ransac)
-        print(result_icp)
-        calc_pose = source.transform(result_icp.transformation)
-        self.draw_registration_result(source, target, result_icp.transformation,title='ICP estimation')
-        return calc_pose
-    
-    def o3dpc_to_rospc(self,src, frame_id = 'map'):
-        # Convertir la nube de puntos de Open3D a un mensaje PointCloud2 de ROS2
-        points = np.asarray(src.points)
-        msg = PointCloud2()
-        msg.header.frame_id = frame_id  # Cambia 'map' por el marco de referencia deseado
-        msg.height = 1
-        msg.width = points.shape[0]
-        msg.fields = [PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
-                      PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
-                      PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1)]
-        msg.is_bigendian = False
-        msg.point_step = 12
-        msg.row_step = msg.point_step * points.shape[0]
-        msg.is_dense = True
-        msg.data = points.tobytes()
-        return msg
-
-    def processing_method(self):
-        if self.start:
-            print('Waiting ...')
-            return
-        self.get_logger().info("Transforming open3D pc to Point Cloud2 msg...")
-        complete_scene = self.o3d2ros(self.scene_pointcloud,frame_id="camera_depth_frame")
-        self.pub_rgbd.publish(complete_scene)
-        segmented_msg = self.o3d2ros(self.segmented_point_cloud,frame_id="camera_depth_frame")
-        # self.pub_segmented_img.publish(segmented_msg)
-        # self.calc_pose = self.pose_register(self.ideal_pepper,self.segmented_point_cloud)
-        # pose_msg = self.o3dpc_to_rospc(self.calc_pose,frame_id="camera_depth_frame")
-        # self.pub_pose_estimation.publish(pose_msg)
+    def calculate_centroid(self,points):
+        x = points[:,0]
+        y = points[:,1]
+        z = points[:,2]
+        return [np.mean(x), np.mean(y), np.mean(z)]
 
 def main(args=None):
-    # Required lines for any node
     rclpy.init(args=args)
-    node = Class_name()
+    node = RGBDPointCloudGenerator()
     rclpy.spin(node)
-    # Optional but good practices
     node.destroy_node()
     rclpy.shutdown()
 
