@@ -17,6 +17,7 @@ class RGBDPointCloudGenerator(Node):
         self.depth_sub = self.create_subscription(Image, '/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
 
         self.pcd_publisher = self.create_publisher(PointCloud2, '/filtered_point_cloud', 10)
+        self.pub_centroid = self.create_publisher(PointCloud2,'/centroid',10)
         
         self.bridge = CvBridge()
         self.latest_color_image = None
@@ -70,9 +71,6 @@ class RGBDPointCloudGenerator(Node):
             rgbd_image,
             self.intrinsic
         )
-        # pcd.transform([[1,0,0,0], [0,-1,0,0], [0,0,-1,0], [0,0,0,1]])
-        # Visualize the point cloud
-        # o3d.visualization.draw_geometries([pcd])
 
         # Convert Open3D Point Cloud to ROS PointCloud2
         points = np.asarray(pcd.points)
@@ -83,7 +81,7 @@ class RGBDPointCloudGenerator(Node):
         rgb = np.asarray(rgb, dtype=np.float32)
         points_rgb = np.hstack((points, rgb.reshape(-1,1)))
 
-        print(points_rgb.shape[0])
+        # print(points_rgb.shape[0])
 
         header = std_msgs.msg.Header()
         header.stamp = self.get_clock().now().to_msg()
@@ -100,13 +98,8 @@ class RGBDPointCloudGenerator(Node):
         self.pcd_publisher.publish(cloud_msg)
         numpy_pc = pc2.read_points_numpy(cloud_msg)
         centroid = self.calculate_centroid(numpy_pc)
-    
-    def centroid2rospoint(self, centroid):
-        point = Point()
-        point.x = centroid[0]
-        point.y = centroid[1]
-        point.z = centroid[2]
-        return point
+        centroid_msg = pc2.create_cloud_xyz32(header, [centroid])
+        # self.pub_centroid.publish(centroid_msg)
 
     def calculate_centroid(self,points):
         x = points[:,0]
