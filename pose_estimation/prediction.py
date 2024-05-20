@@ -85,7 +85,7 @@ class segmentator(Node):
             # Create contour mask 
             contour = c.masks.xy.pop()
             contour = contour.astype(np.int32).reshape(-1, 1, 2)
-            mask = cv2.drawContours(b_mask, [contour], -1, (255, 255, 255), cv2.FILLED)
+            cv2.drawContours(b_mask, [contour], -1, (255, 255, 255), cv2.FILLED)
 
 
         # OPTION-1: Isolate object with black background
