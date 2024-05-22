@@ -99,7 +99,8 @@ class RGBDPointCloudGenerator(Node):
         numpy_pc = pc2.read_points_numpy(cloud_msg)
         centroid = self.calculate_centroid(numpy_pc)
         centroid_msg = pc2.create_cloud_xyz32(header, [centroid])
-        # self.pub_centroid.publish(centroid_msg)
+        self.pub_centroid.publish(centroid_msg)
+        self.get_logger().info("Centroid estimated at x:{}, y:{}, z:{}".format(centroid[0],centroid[1],centroid[2]))
 
     def calculate_centroid(self,points):
         x = points[:,0]

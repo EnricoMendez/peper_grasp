@@ -18,6 +18,7 @@ class segmentator(Node):
         # Create variables
         self.flag = False
         self.org_img = np.array((720, 1280, 3))
+        self.pepper_detected = False
         
         # Define constants
         self.bridge = CvBridge()
@@ -52,7 +53,7 @@ class segmentator(Node):
         self.msg_prediction = self.bridge.cv2_to_imgmsg(prediction)
         self.msg_mask = self.bridge.cv2_to_imgmsg(mask)
         self.pub_prediction.publish(self.msg_prediction)
-        self.pub_mask.publish(self.msg_mask)
+        if self.pepper_detected: self.pub_mask.publish(self.msg_mask)
     
     def get_pkg_path(self,target='size_estimation'):
         # Get exc path
@@ -74,9 +75,12 @@ class segmentator(Node):
     
     def get_pepper_mask(self,src):
         black_mask = np.zeros(src.shape[:2], dtype=np.uint8)
-        results = self.model.predict(src, conf = 0.9)
-        if results[0].masks is None: return black_mask, src
+        results = self.model.predict(src, conf = 0.9, verbose = False)
+        if results[0].masks is None: 
+            self.pepper_detected = False
+            return black_mask, src
         # iterate detection results 
+        self.pepper_detected = True
         r = results[0]
         raw_prediction = r.plot()
         b_mask = np.zeros(src.shape[:2], np.uint8)
