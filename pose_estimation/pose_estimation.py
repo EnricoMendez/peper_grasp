@@ -137,7 +137,7 @@ class RGBDPointCloudGenerator(Node):
             point = np.array(point)
             point_world = rot_matrix @ point + np.array([translation.x, translation.y, translation.z])
 
-            self.get_logger().info("Centroid estimated at x:{}, y:{}, z:{}".format(point_world[0],point_world[1],point_world[2]))
+            self.get_logger().info("Centroid estimated at x:{}, y:{}, z:{}".format(point_world[0],point_world[1],point_world[2]), once=True)
             return point_world
         
         except tf2_ros.LookupException:

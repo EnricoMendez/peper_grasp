@@ -40,7 +40,7 @@ class segmentator(Node):
     
     def cam_callback(self,data):
         if not self.flag:
-            self.get_logger().info("Image recieved")
+            self.get_logger().info("Image recieved", once=True)
             self.flag = True
         self.org_img = self.bridge.imgmsg_to_cv2(data)
         self.org_img = cv2.cvtColor(self.org_img, cv2.COLOR_BGR2RGB)
@@ -48,7 +48,7 @@ class segmentator(Node):
     def timer_callback(self):
         if not self.flag: return
         # Make prediction
-        self.get_logger().info("Prediction ...")
+        self.get_logger().info("Prediction ...", once=True)
         mask, prediction = self.get_pepper_mask(self.org_img)
         self.msg_prediction = self.bridge.cv2_to_imgmsg(prediction)
         self.msg_mask = self.bridge.cv2_to_imgmsg(mask)

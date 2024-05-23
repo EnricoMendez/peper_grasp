@@ -8,7 +8,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
-    log_level = 'WARN'  # Define the log level here
+    log_level = LaunchConfiguration('log_level', default='WARN')
 
     rviz_node = Node(
         package='rviz2',
@@ -52,7 +52,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_transform_publisher',
-        arguments=['0.065', '0', '0.003', '1.58', '0', '0', 'link6', 'camera_color_optical_frame'],
+        arguments=['0.065', '-0.031', '0.023', '1.58', '0', '0', 'link6', 'camera_color_optical_frame'],
         output='screen',
         parameters=[{'log_level': log_level}]
     )
@@ -61,7 +61,7 @@ def generate_launch_description():
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_transform_publisher_2',
-        arguments=['0', '0', '0', '0', '0', '0', 'frame_id', 'child_frame_id'],
+        arguments=['0.065', '-0.031', '0.023', '1.58', '0', '0', 'link6', 'camera_color_optical_frame'],
         output='screen',
         parameters=[{'log_level': log_level}]
     )

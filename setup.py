@@ -27,8 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pose_estimation = pose_estimation.pose_estimation:main',
-            'segmentation = pose_estimation.prediction:main', 
-            'move_line = pose_estimation.move_line:main'
+            'segmentation = pose_estimation.prediction:main'
         ],
     },
 )
