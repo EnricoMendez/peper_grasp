@@ -5,7 +5,7 @@ from cv_bridge import CvBridge
 import rclpy
 from rclpy.node import Node
 import std_msgs.msg
-from sensor_msgs.msg import Image, PointCloud2, PointField
+from sensor_msgs.msg import Image, PointCloud2, PointField, CameraInfo 
 from sensor_msgs_py import point_cloud2 as pc2
 import tf2_ros
 
@@ -15,6 +15,7 @@ class RGBDPointCloudGenerator(Node):
 
         self.color_sub = self.create_subscription(Image, 'mask', self.color_callback, 10)
         self.depth_sub = self.create_subscription(Image, '/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
+        self.sub_info = self.create_subscription(CameraInfo,'/camera/aligned_depth_to_color/camera_info', self.info_callback, 10)
 
         self.pcd_publisher = self.create_publisher(PointCloud2, '/filtered_point_cloud', 10)
         self.pub_centroid = self.create_publisher(PointCloud2, '/centroid', 10)
@@ -30,31 +31,24 @@ class RGBDPointCloudGenerator(Node):
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        
-        # Camera Intrinsics
-        hfov_radians = np.deg2rad(84) #1.57 # Horizontal field of view in radians
-        image_width = 1280 # Image width in pixels
-        image_height = 720 # Image height in pixels
-        focal_length_px = image_width / (2 * np.tan(hfov_radians / 2))
+
+
+    def info_callback(self, msg):
         self.intrinsic = o3d.camera.PinholeCameraIntrinsic(
-            width = image_width, 
-            height = image_height, 
-            fx = focal_length_px,  
-            fy = focal_length_px, 
-            cx = image_width / 2, 
-            cy = image_height / 2
+            width = msg.width, 
+            height = msg.height, 
+            fx = msg.k[0],  
+            fy = msg.k[4], 
+            cx = msg.k[2], 
+            cy = msg.k[5]
         )
 
     def color_callback(self, msg):
         self.latest_color_image = self.bridge.imgmsg_to_cv2(msg)
         self.latest_color_image = cv2.cvtColor(self.latest_color_image, cv2.COLOR_BGR2RGB)
-        # self.get_logger().info("Color image received.")
-        self.color_recieved = True
     
     def depth_callback(self, msg):
         self.latest_depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        # self.get_logger().info("Depth image received.")
-        self.depth_recieved = True
 
     def timer_callback(self):
         self.generate_point_cloud()

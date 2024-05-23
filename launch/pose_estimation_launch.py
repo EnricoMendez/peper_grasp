@@ -8,12 +8,15 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
+    log_level = 'WARN'  # Define the log level here
+
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         output='screen',
         arguments=['-d', os.path.join(get_package_share_directory('pose_estimation'), 'config', 'inspector.rviz')],
+        parameters=[{'log_level': log_level}]
     )
 
     realsense_node = IncludeLaunchDescription(
@@ -22,41 +25,53 @@ def generate_launch_description():
         ),
         launch_arguments={
             'align_depth.enable': 'true',
-            'pointcloud.enable': 'true'
+            'pointcloud.enable': 'true',
+            'log_level': log_level
         }.items()
     )
+
     ulite6_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('xarm_api'),'launch', 'lite6_driver.launch.py')
-            ),
-            launch_arguments={'robot_ip': '192.168.1.168'}.items()
-            )
+        ),
+        launch_arguments={'robot_ip': '192.168.1.168', 'log_level': log_level}.items()
+    )
+
     xarm_rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(get_package_share_directory('pose_estimation'), 'launch', 'lite6_control_rviz_display.launch.py')
         ),
         launch_arguments={
             'robot_ip': '192.168.1.168',
-            'add_gripper': 'true'
+            'add_gripper': 'true',
+            'log_level': log_level
         }.items()
     )
+
     static_transform_publisher = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_transform_publisher',
         arguments=['0.065', '0', '0.003', '1.58', '0', '0', 'link6', 'camera_color_optical_frame'],
-        output='screen'
+        output='screen',
+        parameters=[{'log_level': log_level}]
     )
+
     static_transform_publisher_2 = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='static_transform_publisher_2',
         arguments=['0', '0', '0', '0', '0', '0', 'frame_id', 'child_frame_id'],
-        output='screen'
+        output='screen',
+        parameters=[{'log_level': log_level}]
     )
+
     segmentation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('pose_estimation'), 'launch', 'segmentation_launch.py')))
+            os.path.join(get_package_share_directory('pose_estimation'), 'launch', 'segmentation_launch.py')
+        ),
+        launch_arguments={'log_level': log_level}.items()
+    )
 
     return LaunchDescription([
         realsense_node,
