@@ -75,7 +75,7 @@ class segmentator(Node):
     
     def get_pepper_mask(self,src):
         black_mask = np.zeros(src.shape[:2], dtype=np.uint8)
-        results = self.model.predict(src, conf = 0.9, verbose = False)
+        results = self.model.predict(src, conf = 0.85, verbose = False)
         if results[0].masks is None: 
             self.pepper_detected = False
             return black_mask, src

@@ -5,9 +5,9 @@ from cv_bridge import CvBridge
 import rclpy
 from rclpy.node import Node
 import std_msgs.msg
-from sensor_msgs.msg import PointField
-from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.msg import Image, PointCloud2, PointField
 from sensor_msgs_py import point_cloud2 as pc2
+import tf2_ros
 
 class RGBDPointCloudGenerator(Node):
     def __init__(self):
@@ -17,12 +17,20 @@ class RGBDPointCloudGenerator(Node):
         self.depth_sub = self.create_subscription(Image, '/camera/aligned_depth_to_color/image_raw', self.depth_callback, 10)
 
         self.pcd_publisher = self.create_publisher(PointCloud2, '/filtered_point_cloud', 10)
-        self.pub_centroid = self.create_publisher(PointCloud2,'/centroid',10)
+        self.pub_centroid = self.create_publisher(PointCloud2, '/centroid', 10)
+        self.pub_centroid_world = self.create_publisher(PointCloud2, '/centroid_world', 10)
+        self.timer_period = 0.5
+        self.timer = self.create_timer(self.timer_period, self.timer_callback)
         
         self.bridge = CvBridge()
         self.latest_color_image = None
         self.latest_depth_image = None
+        self.color_recieved = False
+        self.depth_recieved = False
 
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        
         # Camera Intrinsics
         hfov_radians = np.deg2rad(84) #1.57 # Horizontal field of view in radians
         image_width = 1280 # Image width in pixels
@@ -40,9 +48,15 @@ class RGBDPointCloudGenerator(Node):
     def color_callback(self, msg):
         self.latest_color_image = self.bridge.imgmsg_to_cv2(msg)
         self.latest_color_image = cv2.cvtColor(self.latest_color_image, cv2.COLOR_BGR2RGB)
+        # self.get_logger().info("Color image received.")
+        self.color_recieved = True
     
     def depth_callback(self, msg):
         self.latest_depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        # self.get_logger().info("Depth image received.")
+        self.depth_recieved = True
+
+    def timer_callback(self):
         self.generate_point_cloud()
 
     def generate_point_cloud(self):
@@ -98,15 +112,66 @@ class RGBDPointCloudGenerator(Node):
         self.pcd_publisher.publish(cloud_msg)
         numpy_pc = pc2.read_points_numpy(cloud_msg)
         centroid = self.calculate_centroid(numpy_pc)
+
+
         centroid_msg = pc2.create_cloud_xyz32(header, [centroid])
         self.pub_centroid.publish(centroid_msg)
-        self.get_logger().info("Centroid estimated at x:{}, y:{}, z:{}".format(centroid[0],centroid[1],centroid[2]))
+        world_centroid = self.transform_point(centroid, 'world')
+        world_centroid_msg = pc2.create_cloud_xyz32(header, [world_centroid])
+        world_centroid_msg.header.frame_id = 'world'
+        self.pub_centroid_world.publish(world_centroid_msg)
 
-    def calculate_centroid(self,points):
+    def calculate_centroid(self, points):
         x = points[:,0]
         y = points[:,1]
         z = points[:,2]
         return [np.mean(x), np.mean(y), np.mean(z)]
+
+    def transform_point(self, point, target_frame):
+        try:
+            # Look up the transformation at the current time
+            transform = self.tf_buffer.lookup_transform(target_frame, 'camera_color_optical_frame', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0))
+            
+            # Extract translation and rotation
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            
+            # Convert ROS Quaternion to a rotation matrix
+            rot_matrix = self.quaternion_to_rotation_matrix(rotation)
+
+            # Apply rotation and translation to the point
+            point = np.array(point)
+            point_world = rot_matrix @ point + np.array([translation.x, translation.y, translation.z])
+
+            self.get_logger().info("Centroid estimated at x:{}, y:{}, z:{}".format(point_world[0],point_world[1],point_world[2]))
+            return point_world
+        
+        except tf2_ros.LookupException:
+            self.get_logger().error("Transform lookup failed.")
+            return None
+        except tf2_ros.ExtrapolationException:
+            self.get_logger().error("Transform extrapolation failed.")
+            return None
+
+    def quaternion_to_rotation_matrix(self, q):
+        # Convert a quaternion into a full three-dimensional rotation matrix.
+        x, y, z, w = q.x, q.y, q.z, q.w
+        xx = x * x
+        yy = y * y
+        zz = z * z
+        xy = x * y
+        xz = x * z
+        yz = y * z
+        wx = w * x
+        wy = w * y
+        wz = w * z
+
+        rot_matrix = np.array([
+            [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+            [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+            [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)]
+        ])
+        return rot_matrix
 
 def main(args=None):
     rclpy.init(args=args)
