@@ -29,7 +29,7 @@ class move_line(Node):
         self.get_logger().info('Robot initialized')
         
         # Move to image caṕture position
-        self.send_request(pose=[200.0, 0.0, 400.0, 3.14, 0.0, 0.0])
+        self.send_request(pose=self.home)
         
         #  Create timmer
         self.timer_period = 0.5
@@ -102,7 +102,7 @@ class move_line(Node):
         target = pc2.read_points_numpy(msg)
         self.x = float(target[0][0] * 1000)
         self.y = float(target[0][1] * 1000)
-        self.z = float(target[0][2] * 1000)
+        self.z = float(target[0][2] * 1000 + 40)
         self.get_logger().info("Centroid received x: {}, y: {}, z: {}".format(self.x, self.y, self.z),once=True)
         self.centroid_recieved = True
 

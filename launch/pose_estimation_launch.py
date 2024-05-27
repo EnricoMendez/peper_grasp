@@ -76,9 +76,9 @@ def generate_launch_description():
     return LaunchDescription([
         realsense_node,
         TimerAction(period=1.0, actions=[ulite6_bringup]),
-        TimerAction(period=4.0, actions=[static_transform_publisher]),
+        TimerAction(period=15.0, actions=[static_transform_publisher]),
         TimerAction(period=2.0, actions=[xarm_rviz]),
-        TimerAction(period=12.0, actions=[rviz_node]),
-        TimerAction(period=8.0, actions=[static_transform_publisher_2]),
+        TimerAction(period=7.0, actions=[rviz_node]),
+        TimerAction(period=5.0, actions=[static_transform_publisher_2]),
         TimerAction(period=10.0, actions=[segmentation])
     ])

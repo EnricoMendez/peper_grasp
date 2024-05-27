@@ -8,6 +8,7 @@ import std_msgs.msg
 from sensor_msgs.msg import Image, PointCloud2, PointField, CameraInfo 
 from sensor_msgs_py import point_cloud2 as pc2
 import tf2_ros
+import cv2
 
 class RGBDPointCloudGenerator(Node):
     def __init__(self):
@@ -28,10 +29,18 @@ class RGBDPointCloudGenerator(Node):
         self.latest_depth_image = None
         self.color_recieved = False
         self.depth_recieved = False
+        self.intrinsic = None
+        self.intrinsic = o3d.camera.PinholeCameraIntrinsic(
+            width = 1280,  # Image width in pixels
+            height = 720,  # Image height in pixels
+
+            fx = 922.1322631835938,
+            fy = 922.2659301757812,
+            cx = 654.000244140625,
+            cy = 361.27093505859375,)
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
 
     def info_callback(self, msg):
         self.intrinsic = o3d.camera.PinholeCameraIntrinsic(
@@ -45,24 +54,43 @@ class RGBDPointCloudGenerator(Node):
 
     def color_callback(self, msg):
         self.latest_color_image = self.bridge.imgmsg_to_cv2(msg)
-        self.latest_color_image = cv2.cvtColor(self.latest_color_image, cv2.COLOR_BGR2RGB)
+        # self.latest_color_image = cv2.cvtColor(self.latest_color_image, cv2.COLOR_BGR2RGB)
     
     def depth_callback(self, msg):
         self.latest_depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
 
     def timer_callback(self):
-        self.generate_point_cloud()
-
-    def generate_point_cloud(self):
-        if self.latest_color_image is None or self.latest_depth_image is None: 
+        if self.latest_color_image is None or self.latest_depth_image is None or self.intrinsic is None: 
+            self.get_logger().warn("Messages not recieved yet.")
             return
-        mask = (self.latest_color_image.sum(axis=2) > 0).astype(np.uint8) * 255
-        self.masked_depth_image = cv2.bitwise_and(self.latest_depth_image, self.latest_depth_image, mask=mask)
+        self.get_logger().info("Messages recieved. Generating point cloud.", once=True)
+        _, img_binary = cv2.threshold(self.latest_color_image, 1, 255, cv2.THRESH_BINARY)
+        img_binary = cv2.cvtColor(img_binary, cv2.COLOR_BGR2GRAY)
+        num_blobs, blobs = cv2.connectedComponents(img_binary)
+        centroids = []
+        for i in range (1,num_blobs):
+            mask = (blobs == i).astype(np.uint8)
+            masked_depth_image = cv2.bitwise_and(self.latest_depth_image, self.latest_depth_image, mask=mask)
+            pc = self.generate_point_cloud(masked_depth_image)
+            cloud_msg = self.generate_pc2_msg(pc, "camera_color_optical_frame")
+            numpy_pc = pc2.read_points_numpy(cloud_msg)
+            centroid = self.calculate_centroid(numpy_pc)
+            centroids.append(centroid)
+        centroid_msg = self.np2ros(np.array(centroids), 'camera_color_optical_frame')
+        self.pub_centroid.publish(centroid_msg)
+        self.get_logger().info("Centroid published successfully", once=True)
+        world_centroid = self.transform_point(centroids, 'world')
+        if world_centroid is not None:
+            world_centroid_msg = self.np2ros(np.array([world_centroid]), 'world')
+            self.pub_centroid_world.publish(world_centroid_msg)
+            self.get_logger().info("World centroid published successfully", once=True)
+        
+
+    def generate_point_cloud(self, masked_depth_image):
         # Convert image to open3d format
-        depth_o3d = o3d.geometry.Image(self.masked_depth_image.astype(np.uint16))
+        depth_o3d = o3d.geometry.Image(masked_depth_image.astype(np.uint16))
         # Convert color image to Open3D format
-        color_temp = cv2.cvtColor(self.latest_color_image, cv2.COLOR_RGB2BGR)
-        # color_temp = self.latest_color_image
+        color_temp = self.latest_color_image
         color_o3d = o3d.geometry.Image(color_temp)
 
         # Create RGB-D image from color and depth
@@ -83,17 +111,18 @@ class RGBDPointCloudGenerator(Node):
         # Convert Open3D Point Cloud to ROS PointCloud2
         points = np.asarray(pcd.points)
         colors = np.asarray(pcd.colors) * 255 # Denormalize colors
-        #points_colors = np.hstack((points, colors))
-        rgb = colors[:,0] + colors[:,1] * 256 + colors[:,2] * 256 * 256
-        # rgb = colors[:,0] + colors[:,1] + colors[:,2] #* 256 #* 256
+        # points_colors = np.hstack((points, colors))
+        # rgb = colors[:,0] + colors[:,1] * 256 + colors[:,2] * 256 * 256
+        rgb = colors[:,0] + colors[:,1] + colors[:,2] #* 256 #* 256
         rgb = np.asarray(rgb, dtype=np.float32)
         points_rgb = np.hstack((points, rgb.reshape(-1,1)))
 
-        # print(points_rgb.shape[0])
-
+        return points_rgb
+    
+    def generate_pc2_msg(self, points_rgb, frame_id):
         header = std_msgs.msg.Header()
         header.stamp = self.get_clock().now().to_msg()
-        header.frame_id = "camera_color_optical_frame"
+        header.frame_id = frame_id
 
         fields = [
             PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
@@ -103,17 +132,15 @@ class RGBDPointCloudGenerator(Node):
         ]
 
         cloud_msg = pc2.create_cloud(header, fields, points_rgb)
-        self.pcd_publisher.publish(cloud_msg)
-        numpy_pc = pc2.read_points_numpy(cloud_msg)
-        centroid = self.calculate_centroid(numpy_pc)
+        return cloud_msg
 
+    def np2ros(self, points, frame_id):
+        header = std_msgs.msg.Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = frame_id
 
-        centroid_msg = pc2.create_cloud_xyz32(header, [centroid])
-        self.pub_centroid.publish(centroid_msg)
-        world_centroid = self.transform_point(centroid, 'world')
-        world_centroid_msg = pc2.create_cloud_xyz32(header, [world_centroid])
-        world_centroid_msg.header.frame_id = 'world'
-        self.pub_centroid_world.publish(world_centroid_msg)
+        cloud_msg = pc2.create_cloud_xyz32(header, points)
+        return cloud_msg
 
     def calculate_centroid(self, points):
         x = points[:,0]
@@ -121,7 +148,7 @@ class RGBDPointCloudGenerator(Node):
         z = points[:,2]
         return [np.mean(x), np.mean(y), np.mean(z)]
 
-    def transform_point(self, point, target_frame):
+    def transform_point(self, points, target_frame):
         try:
             # Look up the transformation at the current time
             transform = self.tf_buffer.lookup_transform(target_frame, 'camera_color_optical_frame', rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0))
@@ -134,11 +161,16 @@ class RGBDPointCloudGenerator(Node):
             rot_matrix = self.quaternion_to_rotation_matrix(rotation)
 
             # Apply rotation and translation to the point
-            point = np.array(point)
+            
+            points_world = []
+            for point in points:
+                point = np.array(point)
+                point_world = rot_matrix @ point + np.array([translation.x, translation.y, translation.z])
+                points_world.append(point_world)
             point_world = rot_matrix @ point + np.array([translation.x, translation.y, translation.z])
 
             self.get_logger().info("Centroid estimated at x:{}, y:{}, z:{}".format(point_world[0],point_world[1],point_world[2]), once=True)
-            return point_world
+            return points_world
         
         except tf2_ros.LookupException:
             self.get_logger().error("Transform lookup failed.")
