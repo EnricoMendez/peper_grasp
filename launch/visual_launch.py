@@ -42,15 +42,6 @@ def generate_launch_description():
             'add_gripper': 'true',
         }.items()
     )
-    # xarm_rviz = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(
-    #         os.path.join(get_package_share_directory('xarm_controller'), 'launch', 'lite6_control_rviz_display.launch.py')
-    #     ),
-    #     launch_arguments={
-    #         'robot_ip': '192.168.1.168',
-    #         'add_gripper': 'true'
-    #     }.items()
-    # )
 
     static_transform_publisher = Node(
         package='tf2_ros',

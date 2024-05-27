@@ -4,6 +4,7 @@ from xarm_msgs.srv import MoveCartesian
 from sensor_msgs.msg import PointCloud2 
 from sensor_msgs_py import point_cloud2 as pc2
 from xarm_msgs.srv import SetInt16ById, SetInt16
+import time
 
 class move_line(Node):
     def __init__(self):
@@ -12,6 +13,7 @@ class move_line(Node):
 
         # Create variables
         self.centroid_recieved = False
+        self.target = None
         self.x = 0
         self.y = 0
         self.z = 0
@@ -22,7 +24,7 @@ class move_line(Node):
         self.req = MoveCartesian.Request()
 
         # Create subscribers
-        self.sub_centroid = self.create_subscription(PointCloud2,'/centroid_world', self.sub_centroid_callback, 10)
+        self.sub_centroid = self.create_subscription(PointCloud2,'/centroid_world', self.sub_centroid_callback, 1)
         
         # Initiation routine 
         self.init_robot()
@@ -30,6 +32,8 @@ class move_line(Node):
         
         # Move to image caṕture position
         self.send_request(pose=self.home)
+        
+        time.sleep(5)
         
         #  Create timmer
         self.timer_period = 0.5
@@ -99,30 +103,31 @@ class move_line(Node):
         # self.get_logger().info("Service call completed")  
 
     def sub_centroid_callback(self, msg):
-        target = pc2.read_points_numpy(msg)
-        self.x = float(target[0][0] * 1000)
-        self.y = float(target[0][1] * 1000)
-        self.z = float(target[0][2] * 1000 + 40)
-        self.get_logger().info("Centroid received x: {}, y: {}, z: {}".format(self.x, self.y, self.z),once=True)
+        self.target = pc2.read_points_numpy(msg)
+        self.get_logger().info("Centroid received",once=True)
         self.centroid_recieved = True
 
     def grasp_routine(self, target):
         self.send_request(pose=target)
-        ans = input("Do you want to grasp the object? (y/n)")
-        ans = input('DO you want to move to home position? (y/n)')
-        if ans == 'y':
-            self.send_request(pose=self.home)
-            self.get_logger().info("Moving to home position",once=True)
+        time.sleep(2)
+        self.send_request(pose=self.home)
+        self.get_logger().info("Moving to home position",once=True)
 
     def timer_callback(self):
         if not self.centroid_recieved: return
-        self.get_logger().info("Centroid estimated to \n x: {}\n y: {}\n z: {}".format(self.x, self.y, self.z))
-        answer = input("Do you want to move to this position? (y/n)")
-        if answer == 'y':
+        self.get_logger().info("{} points received".format(len(self.target)))
+        ans = input("Do you want to proced? (y/n)")
+        if ans == 'n':
+            self.get_logger().info("No points accepted")
+            return
+        for point in self.target:
+            self.x = float(point[0] * 1000)
+            self.y = float(point[1] * 1000)
+            self.z = float(point[2] * 1000 + 40)
+            self.get_logger().info("Centroid estimated to \n x: {}\n y: {}\n z: {}".format(self.x, self.y, self.z))
             self.pose = [self.x, self.y, self.z, 3.14, 0.0, 0.0]
             self.grasp_routine(self.pose)
-        else:
-            self.get_logger().info("Position not accepted",once=True)
+
 def main(args=None):
     # Required lines for any node
     rclpy.init(args=args)
@@ -131,7 +136,6 @@ def main(args=None):
     # Optional but good practices
     node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
