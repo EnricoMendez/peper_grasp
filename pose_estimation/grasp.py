@@ -22,6 +22,7 @@ class move_line(Node):
         
         # Define constants
         self.req = MoveCartesian.Request()
+        self.req.speed = float(150)
 
         # Create subscribers
         self.sub_centroid = self.create_subscription(PointCloud2,'/centroid_world', self.sub_centroid_callback, 1)
